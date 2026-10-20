@@ -1,7 +1,7 @@
 {
   "name": "Fatture",
   "short_name": "Fatture",
-  "description": "Scansiona le fatture, non dimenticarti di pagarle.",
+  "description": "Archivio delle fatture pagate: scansiona e salva su Drive.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

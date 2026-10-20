@@ -1,11 +1,8 @@
-// Google Drive + Calendar, direttamente dal browser (nessun server nostro).
-// Permessi minimi:
-//  - drive.file       → l'app vede SOLO i file e le cartelle che ha creato lei
-//  - calendar.events  → crea/modifica/cancella solo eventi (non legge altro)
+// Google Drive, direttamente dal browser (nessun server nostro).
+// Permesso minimo: drive.file → l'app vede SOLO i file e le cartelle che ha creato lei.
 // Il token d'accesso vive solo in memoria e scade dopo circa un'ora.
 
 const SCOPE_DRIVE = 'https://www.googleapis.com/auth/drive.file';
-const SCOPE_CAL = 'https://www.googleapis.com/auth/calendar.events';
 const STORE = 'fatture.google';
 const FOLDER_CACHE = 'fatture.folders';
 
@@ -29,7 +26,6 @@ export const state = () => load(STORE, { connected: false });
 const saveState = (s) => localStorage.setItem(STORE, JSON.stringify(s));
 export const isConnected = () => state().connected === true;
 export const canDrive = () => isConnected() && state().drive === true;
-export const canCalendar = () => isConnected() && state().cal === true;
 export const hasClientId = () => !!clientId;
 
 export function setClientId(id) {
@@ -50,7 +46,7 @@ function ensureClient() {
   if (!oauth) throw new Error('Google non è raggiungibile (sei offline?).');
   tokenClient = oauth.initTokenClient({
     client_id: clientId,
-    scope: `${SCOPE_DRIVE} ${SCOPE_CAL}`,
+    scope: SCOPE_DRIVE,
     callback: (resp) => {
       const p = pending;
       pending = null;
@@ -64,7 +60,6 @@ function ensureClient() {
       saveState({
         connected: true,
         drive: oauth.hasGrantedAllScopes(resp, SCOPE_DRIVE),
-        cal: oauth.hasGrantedAllScopes(resp, SCOPE_CAL),
       });
       p.resolve(token);
     },
@@ -195,50 +190,20 @@ export async function uploadPdf(blob, name, path) {
   }
 }
 
-/* ---------- Calendar ---------- */
-const tz = () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Zurich';
-
-function eventBody({ title, description, date }) {
-  return {
-    summary: title,
-    description,
-    start: { dateTime: `${date}T09:00:00`, timeZone: tz() },
-    end: { dateTime: `${date}T09:30:00`, timeZone: tz() },
-    reminders: {
-      useDefault: false,
-      overrides: [
-        { method: 'popup', minutes: 7 * 24 * 60 },
-        { method: 'popup', minutes: 3 * 24 * 60 },
-        { method: 'popup', minutes: 24 * 60 },
-        { method: 'popup', minutes: 0 },
-      ],
-    },
-  };
-}
-
-export async function createEvent(ev) {
-  const res = await gfetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(eventBody(ev)),
-  });
-  return (await res.json()).id;
-}
-
-export async function updateEvent(id, ev) {
-  await gfetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}`, {
+/** Rinomina e/o sposta un file già su Drive (dopo una modifica di mandante, data o categoria). */
+export async function updateFile(fileId, name, path) {
+  let parent = null;
+  for (const seg of path) parent = await folder(seg, parent);
+  const cur = await (await gfetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=parents`)).json();
+  const parents = cur.parents || [];
+  const qs = new URLSearchParams({ fields: 'id' });
+  if (!(parents.length === 1 && parents[0] === parent)) {
+    qs.set('addParents', parent);
+    if (parents.length) qs.set('removeParents', parents.join(','));
+  }
+  await gfetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?${qs}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(eventBody(ev)),
+    body: JSON.stringify({ name }),
   });
-}
-
-export async function deleteEvent(id) {
-  try {
-    await gfetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-  } catch (e) {
-    if (e.status !== 404 && e.status !== 410) throw e; // già cancellato: ok
-  }
 }

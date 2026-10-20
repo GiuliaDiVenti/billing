@@ -39,8 +39,6 @@ const ICONS = {
   link: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/>',
   sync: '<path d="M20 11a8 8 0 0 0-14.5-4M4 5v4h4M4 13a8 8 0 0 0 14.5 4M20 19v-4h-4"/>',
-  alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/>',
-  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
 };
 function icon(name) {
   const t = document.createElement('template');
@@ -75,18 +73,13 @@ function toast(msg, ms = 4200) {
 
 /* ---------- formati ---------- */
 const chf = new Intl.NumberFormat('de-CH', { style: 'currency', currency: 'CHF' });
-const fmtAmount = (n) => (n == null || n === '' ? '—' : chf.format(n));
+const fmtAmount = (n) => (n == null || n === '' ? '' : chf.format(n));
 const dateFmt = new Intl.DateTimeFormat('it-CH', { day: 'numeric', month: 'short', year: 'numeric' });
 const parseDay = (s) => {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d);
 };
 const fmtDay = (s) => (s ? dateFmt.format(parseDay(s)) : '—');
-const daysUntil = (s) => {
-  const t = new Date();
-  t.setHours(0, 0, 0, 0);
-  return Math.round((parseDay(s) - t) / 864e5);
-};
 const todayStr = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -96,28 +89,17 @@ const parseAmount = (s) => {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 };
 const plural = (n, one, many) => (n === 1 ? one : many);
-
-function pillFor(d) {
-  if (d.status === 'paid') return { cls: 'paid', text: 'Pagata' };
-  if (!d.due) return { cls: '', text: 'Senza scadenza' };
-  const n = daysUntil(d.due);
-  if (n < 0) return { cls: 'late', text: `Scaduta da ${-n} ${plural(-n, 'giorno', 'giorni')}` };
-  if (n === 0) return { cls: 'late', text: 'Scade oggi' };
-  if (n === 1) return { cls: 'soon', text: 'Scade domani' };
-  if (n <= 7) return { cls: 'soon', text: `Tra ${n} giorni` };
-  return { cls: '', text: `Entro il ${dateFmt.format(parseDay(d.due))}` };
-}
+const yearOf = (d) => d.date.slice(0, 4);
 
 /* =====================================================================
    Stato
    ===================================================================== */
 let docs = [];
-let tab = 'open';
 let query = '';
+let catFilter = '';
 
 const settings = {
   autoDrive: true,
-  autoCal: true,
   clientId: '',
   tipDismissed: false,
   ...parseJSON(localStorage.getItem('fatture.settings'), {}),
@@ -127,11 +109,8 @@ G.setClientId(settings.clientId || window.FATTURE_CONFIG?.clientId || '');
 
 const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
-/** Quali operazioni Google mancano per questa fattura? */
-const needsDrive = (d) => settings.autoDrive && G.canDrive() && !d.driveId;
-const needsCal = (d) =>
-  settings.autoCal && G.canCalendar() && d.status === 'open' && d.due && !d.eventId && daysUntil(d.due) >= 0;
-const needsSync = (d) => needsDrive(d) || needsCal(d);
+/** Manca l'invio a Drive? */
+const needsSync = (d) => settings.autoDrive && G.canDrive() && !d.driveId;
 
 async function reload() {
   docs = await db.all();
@@ -141,50 +120,34 @@ async function reload() {
 function friendly(e) {
   const body = e?.body || '';
   if (/accessNotConfigured|SERVICE_DISABLED|has not been used/i.test(body))
-    return 'Drive o Calendar non sono abilitati nel progetto Google (vedi guida, punto 2).';
+    return 'Google Drive non è abilitato nel progetto Google (vedi guida, punto 2).';
   if (e?.status === 401 || e?.status === 403) return 'Google ha negato il permesso: ricollega l’account dalle Impostazioni.';
   if (!navigator.onLine) return 'Sei offline: riprova quando c’è rete.';
   return e?.message || 'Errore sconosciuto.';
 }
 
 /* =====================================================================
-   Sincronizzazione Google
+   Sincronizzazione con Drive
    ===================================================================== */
-const eventInfo = (d) => ({
-  title: `Paga fattura: ${d.supplier}${d.amount != null ? ` — ${fmtAmount(d.amount).replace(/ /g, ' ')}` : ''}`,
-  description: [d.category, d.notes, d.driveLink && `Fattura su Drive: ${d.driveLink}`].filter(Boolean).join('\n'),
-  date: d.due,
-});
+const clean = (s) => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
+/** Nome del file su Drive: mandante + data. */
+const fileName = (d) => `${clean(d.supplier) || 'Fattura'} ${d.date}.pdf`;
+/** Cartelle su Drive: anno / categoria. */
+const folderPath = (d) => [yearOf(d), d.category];
 
-const fileName = (d) => {
-  const clean = (s) => s.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const parts = [d.due || todayStr(), clean(d.category), clean(d.supplier)];
-  if (d.amount != null) parts.push(d.amount.toFixed(2));
-  return `${parts.join(' - ')}.pdf`;
-};
-
-/** Invia a Drive / crea il promemoria per una fattura. Lancia se qualcosa fallisce. */
 async function syncDoc(id) {
   const d = await db.get(id);
   if (!d) return;
   try {
-    if (needsDrive(d)) {
+    if (needsSync(d)) {
       const blob = await db.getFile(id);
       if (!blob) throw new Error('File PDF non trovato sul telefono.');
-      const year = (d.due || d.createdAt).slice(0, 4);
-      const r = await G.uploadPdf(blob, fileName(d), ['Fatture', year, d.category]);
+      const r = await G.uploadPdf(blob, fileName(d), folderPath(d));
       d.driveId = r.id;
       d.driveLink = r.webViewLink || '';
-      await db.put(d);
     }
-    if (needsCal(d)) {
-      d.eventId = await G.createEvent(eventInfo(d));
-      await db.put(d);
-    }
-    if (d.syncError) {
-      d.syncError = '';
-      await db.put(d);
-    }
+    d.syncError = '';
+    await db.put(d);
   } catch (e) {
     d.syncError = friendly(e);
     await db.put(d);
@@ -214,7 +177,7 @@ async function syncAll() {
     }
   }
   await reload();
-  toast(ko ? `${ok} inviate, ${ko} no. ${lastErr}` : `${ok} ${plural(ok, 'fattura inviata', 'fatture inviate')} a Google ✓`);
+  toast(ko ? `${ok} inviate, ${ko} no. ${lastErr}` : `${ok} ${plural(ok, 'fattura inviata', 'fatture inviate')} su Drive ✓`);
 }
 
 /* =====================================================================
@@ -223,7 +186,7 @@ async function syncAll() {
 function render() {
   renderStatus();
   renderSummary();
-  renderTabs();
+  renderChips();
   renderList();
 }
 
@@ -236,64 +199,45 @@ function renderStatus() {
 
 function renderSummary() {
   const box = $('#summary');
-  const open = docs.filter((d) => d.status === 'open');
-  const total = open.reduce((s, d) => s + (d.amount || 0), 0);
-  const overdue = open.filter((d) => d.due && daysUntil(d.due) < 0);
-  const next = open.filter((d) => d.due && daysUntil(d.due) >= 0).sort((a, b) => a.due.localeCompare(b.due))[0];
+  const year = String(new Date().getFullYear());
+  const thisYear = docs.filter((d) => yearOf(d) === year).length;
   const toSend = docs.filter(needsSync).length;
-
-  const sub = open.length
-    ? `${open.length} ${plural(open.length, 'fattura', 'fatture')}${next ? ` · prossima: ${next.supplier}, ${fmtDay(next.due)}` : ''}`
-    : 'Nessuna fattura da pagare';
+  const sub = docs.length
+    ? `${thisYear} ${plural(thisYear, 'fattura', 'fatture')} nel ${year}`
+    : 'Tocca “Scansiona fattura” per iniziare';
 
   box.replaceChildren(...[
     h('div', { class: 'hero' },
-      h('span', { class: 'hero-lbl', text: 'Da pagare' }),
-      h('span', { class: 'hero-amt', text: fmtAmount(total) }),
+      h('span', { class: 'hero-lbl', text: 'Archivio' }),
+      h('span', { class: 'hero-amt', text: `${docs.length} ${plural(docs.length, 'fattura', 'fatture')}` }),
       h('span', { class: 'hero-sub', text: sub })
     ),
-    overdue.length &&
-      h('button', { class: 'alert danger', type: 'button', onclick: () => { tab = 'open'; render(); } },
-        icon('alert'),
-        h('span', { class: 'grow', text: `${overdue.length} ${plural(overdue.length, 'fattura scaduta', 'fatture scadute')}: pagala subito` })
-      ),
     toSend > 0 &&
       h('button', { class: 'alert warn', type: 'button', onclick: syncAll },
         icon('sync'),
-        h('span', { class: 'grow', text: `${toSend} da inviare a Google: tocca per inviare` })
+        h('span', { class: 'grow', text: `${toSend} da inviare su Drive: tocca per inviare` })
       ),
     !isStandalone() && !settings.tipDismissed && docs.length > 0 &&
       h('div', { class: 'alert tip' },
         h('span', { class: 'grow', text: 'Aggiungi l’app alla schermata Home dal menù del browser: così i dati restano al sicuro sul telefono.' }),
         h('button', { class: 'x', type: 'button', 'aria-label': 'Chiudi suggerimento', onclick: () => { settings.tipDismissed = true; saveSettings(); render(); } }, icon('close'))
-      )
+      ),
   ].filter(Boolean));
 }
 
-function renderTabs() {
-  const counts = {
-    open: docs.filter((d) => d.status === 'open').length,
-    paid: docs.filter((d) => d.status === 'paid').length,
-    all: docs.length,
-  };
-  const labels = { open: 'Da pagare', paid: 'Pagate', all: 'Tutte' };
-  $('#tabs').replaceChildren(
-    ...Object.keys(labels).map((k) =>
-      h('button', {
-        class: 'tab', type: 'button', role: 'tab', 'aria-selected': String(tab === k),
-        text: `${labels[k]}${counts[k] ? ` (${counts[k]})` : ''}`,
-        onclick: () => { tab = k; render(); },
-      })
-    )
-  );
+function renderChips() {
+  const used = CATEGORIES.filter((c) => docs.some((d) => d.category === c));
+  if (catFilter && !used.includes(catFilter)) catFilter = '';
+  const chip = (label, value) =>
+    h('button', { class: 'chip', type: 'button', 'aria-pressed': String(catFilter === value), text: label, onclick: () => { catFilter = value; render(); } });
+  $('#chips').replaceChildren(...(used.length > 1 ? [chip('Tutte', ''), ...used.map((c) => chip(c, c))] : []));
+  $('#chips').classList.toggle('hidden', used.length < 2);
   $('#search-wrap').classList.toggle('hidden', docs.length < 4);
 }
 
 function visibleDocs() {
-  let l = [...docs];
-  if (tab === 'open') l = l.filter((d) => d.status === 'open').sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999'));
-  else if (tab === 'paid') l = l.filter((d) => d.status === 'paid').sort((a, b) => (b.paidAt || '').localeCompare(a.paidAt || ''));
-  else l.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  let l = [...docs].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  if (catFilter) l = l.filter((d) => d.category === catFilter);
   if (query) {
     const q = query.toLowerCase();
     l = l.filter((d) => [d.supplier, d.category, d.notes].join(' ').toLowerCase().includes(q));
@@ -306,36 +250,38 @@ function thumbEl(d, cls = 'thumb') {
 }
 
 function docItem(d) {
-  const pill = pillFor(d);
   let cloud = null;
   if (d.driveId) cloud = h('span', { class: 'ok', title: 'Salvata su Drive' }, icon('cloud'));
-  else if (needsDrive(d)) cloud = h('span', { class: 'warn', title: 'Da inviare a Drive' }, icon('cloud'));
+  else if (needsSync(d)) cloud = h('span', { class: 'warn', title: 'Da inviare a Drive' }, icon('cloud'));
   return h('li', {},
     h('button', { class: 'doc', type: 'button', onclick: () => openDetail(d.id) },
       thumbEl(d),
       h('span', { class: 'doc-main' },
         h('span', { class: 'doc-title', text: d.supplier }),
-        h('span', { class: 'doc-sub' }, d.category, cloud)
+        h('span', { class: 'doc-sub' }, `${d.category} · ${fmtDay(d.date)}`, cloud)
       ),
-      h('span', { class: 'doc-side' },
-        h('span', { class: 'doc-amount', text: fmtAmount(d.amount) }),
-        h('span', { class: `pill ${pill.cls}`, text: pill.text })
-      )
+      d.amount != null && h('span', { class: 'doc-side' }, h('span', { class: 'doc-amount', text: fmtAmount(d.amount) }))
     )
   );
 }
 
 function renderList() {
   const l = visibleDocs();
-  $('#list').replaceChildren(...l.map(docItem));
+  const items = [];
+  let lastYear = '';
+  for (const d of l) {
+    if (yearOf(d) !== lastYear) {
+      lastYear = yearOf(d);
+      items.push(h('li', { class: 'year', text: lastYear }));
+    }
+    items.push(docItem(d));
+  }
+  $('#list').replaceChildren(...items);
   const empty = $('#empty');
   empty.classList.toggle('hidden', l.length > 0);
   if (!l.length) {
-    let t = 'Nessuna fattura qui';
-    let s = 'Tocca “Scansiona fattura” per aggiungere la prima.';
-    if (query) { t = 'Nessun risultato'; s = 'Prova con un’altra parola.'; }
-    else if (docs.length && tab === 'open') { t = 'Tutto pagato 🎉'; s = 'Non hai fatture in sospeso.'; }
-    else if (docs.length && tab === 'paid') { t = 'Ancora nessuna pagata'; s = 'Le fatture che segni come pagate finiscono qui.'; }
+    const t = query || catFilter ? 'Nessun risultato' : 'Archivio vuoto';
+    const s = query || catFilter ? 'Prova con un’altra parola o categoria.' : 'Tocca “Scansiona fattura” per aggiungere la prima.';
     empty.replaceChildren(h('strong', { text: t }), s);
   }
 }
@@ -360,52 +306,40 @@ function sheet(dlg, title, body, foot) {
 }
 
 /* ---------- modulo dati (nuova fattura e modifica) ---------- */
-function buildForm(init = {}, { showStatus = true, id = 'doc-form' } = {}) {
-  const startStatus = init.status || 'open';
+function buildForm(init = {}, { id = 'doc-form' } = {}) {
   const supplier = h('input', { type: 'text', name: 'supplier', required: true, maxlength: 80, autocomplete: 'off', placeholder: 'es. Helsana, Cantone Ticino', value: init.supplier || '' });
   const category = h('select', { name: 'category' },
     CATEGORIES.map((c) => h('option', { value: c, selected: c === (init.category || CATEGORIES[0]) ? true : null, text: c }))
   );
+  const date = h('input', { type: 'date', name: 'date', required: true, value: init.date || todayStr() });
   const amount = h('input', { type: 'text', name: 'amount', inputmode: 'decimal', autocomplete: 'off', placeholder: '0.00', value: init.amount != null ? Number(init.amount).toFixed(2) : '' });
-  const due = h('input', { type: 'date', name: 'due', value: init.due || '' });
   const notes = h('textarea', { name: 'notes', rows: 2, maxlength: 300, placeholder: 'Numero fattura, riferimento…' }, init.notes || '');
-  const dueHint = h('span', { class: 'hint' });
 
-  const radios = [['open', 'Da pagare'], ['paid', 'Già pagata']].map(([v, label]) =>
-    h('label', {}, h('input', { type: 'radio', name: 'status', value: v, checked: v === startStatus ? true : null }), h('span', { text: label }))
-  );
-
-  const form = h('form', { class: 'form', id, novalidate: false },
-    showStatus && h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Stato' }, radios),
-    h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Fornitore' }), supplier),
-    h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Categoria (cartella su Drive)' }), category),
+  const form = h('form', { class: 'form', id },
+    h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Mandante (chi ha emesso la fattura)' }), supplier),
     h('div', { class: 'row2' },
-      h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Importo (CHF)' }), amount),
-      h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Scadenza' }), due)
+      h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Data fattura' }), date),
+      h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Importo CHF (facoltativo)' }), amount)
     ),
-    dueHint,
+    h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Categoria' }), category),
+    h('span', { class: 'hint', id: id + '-hint' }),
     h('label', { class: 'field' }, h('span', { class: 'lbl', text: 'Note (facoltative)' }), notes)
   );
 
-  const status = () => (showStatus ? form.elements.status.value : startStatus);
-  const applyStatus = () => {
-    const open = status() === 'open';
-    due.required = open;
-    dueHint.textContent = open
-      ? 'Ti ricordo la scadenza su Google Calendar: 7, 3 e 1 giorno prima, e il giorno stesso.'
-      : 'Per le fatture già pagate scadenza e importo sono facoltativi.';
+  const hint = $('#' + id + '-hint', form);
+  const showPath = () => {
+    const y = (date.value || '').slice(0, 4);
+    hint.textContent = y ? `Su Drive: ${y} / ${category.value} / ${clean(supplier.value) || 'Mandante'} ${date.value}.pdf` : '';
   };
-  form.addEventListener('change', applyStatus);
-  amount.addEventListener('input', () => amount.setCustomValidity(''));
-  applyStatus();
+  form.addEventListener('input', () => { amount.setCustomValidity(''); showPath(); });
+  form.addEventListener('change', showPath);
+  showPath();
 
   return {
     el: form,
     validate() {
-      const a = parseAmount(amount.value);
       amount.setCustomValidity('');
-      if (amount.value.trim() && a == null) amount.setCustomValidity('Importo non valido');
-      else if (status() === 'open' && (a == null || a <= 0)) amount.setCustomValidity('Inserisci l’importo da pagare');
+      if (amount.value.trim() && parseAmount(amount.value) == null) amount.setCustomValidity('Importo non valido');
       return form.reportValidity();
     },
     read() {
@@ -413,10 +347,9 @@ function buildForm(init = {}, { showStatus = true, id = 'doc-form' } = {}) {
       return {
         supplier: String(fd.get('supplier')).trim(),
         category: String(fd.get('category')),
+        date: String(fd.get('date')),
         amount: parseAmount(fd.get('amount')),
-        due: String(fd.get('due') || ''),
         notes: String(fd.get('notes') || '').trim(),
-        status: status(),
       };
     },
   };
@@ -426,7 +359,7 @@ function buildForm(init = {}, { showStatus = true, id = 'doc-form' } = {}) {
 function openNew() {
   const dlg = $('#dlg-new');
   const draft = { photos: [], pdf: null, busy: false };
-  const form = buildForm({}, { showStatus: true, id: 'new-form' });
+  const form = buildForm({}, { id: 'new-form' });
 
   const strip = h('div', { class: 'strip' });
   const meta = h('div', { class: 'scan-meta' });
@@ -456,7 +389,7 @@ function openNew() {
           icon('file'),
           h('span', { text: draft.pdf.name }),
           h('button', { class: 'rm', type: 'button', 'aria-label': 'Rimuovi PDF', onclick: () => { draft.pdf = null; refresh(); } }, icon('close'))
-        )
+        ),
     ].filter(Boolean));
     const bytes = draft.photos.reduce((s, p) => s + p.bytes.length, 0) || draft.pdf?.size || 0;
     meta.textContent = has
@@ -513,7 +446,7 @@ function openNew() {
 
     const v = form.read();
     // Il token Google va chiesto subito, mentre il tocco è "fresco" (altrimenti il browser blocca il popup).
-    const wantGoogle = G.isConnected() && (settings.autoDrive || (settings.autoCal && v.status === 'open'));
+    const wantGoogle = G.isConnected() && settings.autoDrive;
     const tokenP = wantGoogle ? G.getToken().catch(() => null) : null;
 
     saveBtn.disabled = true;
@@ -525,30 +458,28 @@ function openNew() {
         id: newId(),
         ...v,
         createdAt: new Date().toISOString(),
-        paidAt: v.status === 'paid' ? new Date().toISOString() : '',
         pages: draft.photos.length || 1,
         thumb: draft.photos[0]?.thumb || '',
-        driveId: '', driveLink: '', eventId: '', syncError: '',
+        driveId: '', driveLink: '', syncError: '',
       };
       await db.save(doc, blob);
       navigator.storage?.persist?.().catch(() => {});
       dlg.close();
-      tab = v.status === 'paid' ? 'paid' : 'open';
       await reload();
       toast('Salvata sul telefono ✓');
       if (tokenP && (await tokenP)) {
-        toast('Invio a Google…', 60000);
+        toast('Invio a Drive…', 60000);
         try {
           await syncDoc(doc.id);
           await reload();
-          toast('Salvata anche su Google ✓');
+          toast('Salvata anche su Drive ✓');
         } catch (e) {
           await reload();
           toast(`Salvata sul telefono, ma non inviata: ${friendly(e)}`, 7000);
         }
       } else if (wantGoogle) {
         await reload();
-        toast('Salvata sul telefono. L’invio a Google non è partito: riprova dal banner arancione.', 7000);
+        toast('Salvata sul telefono. L’invio a Drive non è partito: riprova dal banner arancione.', 7000);
       }
     } catch (e) {
       saveBtn.disabled = false;
@@ -575,33 +506,11 @@ async function openPdf(id) {
   setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
 }
 
-async function setPaid(d, paid) {
-  const tokenP = d.eventId && G.isConnected() ? G.getToken().catch(() => null) : null;
-  const nd = { ...d, status: paid ? 'paid' : 'open', paidAt: paid ? new Date().toISOString() : '' };
-  let note = '';
-  if (paid && d.eventId) {
-    try {
-      if (!(await tokenP)) throw new Error('nessun accesso');
-      await G.deleteEvent(d.eventId);
-      nd.eventId = '';
-    } catch {
-      nd.eventId = '';
-      note = ' Il promemoria su Calendar va tolto a mano.';
-    }
-  }
-  await db.put(nd);
-  $('#dlg-detail').close();
-  await reload();
-  toast(paid ? `Segnata come pagata ✓${note}` : 'Fattura riaperta.');
-  if (!paid && needsCal(nd)) toast('Fattura riaperta. Tocca il banner arancione per rimettere il promemoria.');
-}
-
 async function openDetail(id) {
   const d = docs.find((x) => x.id === id);
   if (!d) return;
   const dlg = $('#dlg-detail');
-  const form = buildForm(d, { showStatus: false, id: 'detail-form' });
-  const pill = pillFor(d);
+  const form = buildForm(d, { id: 'detail-form' });
 
   const saveBtn = h('button', { class: 'btn ghost hidden', type: 'submit', form: 'detail-form' }, 'Salva modifiche');
   form.el.addEventListener('input', () => saveBtn.classList.remove('hidden'));
@@ -610,26 +519,25 @@ async function openDetail(id) {
   form.el.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     if (!form.validate()) return;
-    const v = form.read();
-    const nd = { ...d, ...v, status: d.status };
-    const tokenP = nd.eventId && G.isConnected() ? G.getToken().catch(() => null) : null;
+    const nd = { ...d, ...form.read() };
+    const moved = nd.supplier !== d.supplier || nd.date !== d.date || nd.category !== d.category;
+    const tokenP = moved && nd.driveId && G.isConnected() ? G.getToken().catch(() => null) : null;
     await db.put(nd);
     let msg = 'Modifiche salvate ✓';
-    if (nd.eventId && nd.due) {
+    if (moved && nd.driveId) {
       try {
         if (!(await tokenP)) throw new Error('nessun accesso');
-        await G.updateEvent(nd.eventId, eventInfo(nd));
+        await G.updateFile(nd.driveId, fileName(nd), folderPath(nd));
       } catch {
-        msg = 'Modifiche salvate. Il promemoria su Calendar non è stato aggiornato.';
+        msg = 'Modifiche salvate sul telefono. Il file su Drive non è stato rinominato/spostato.';
       }
     }
     dlg.close();
     await reload();
-    toast(msg);
+    toast(msg, 6000);
   });
 
   const actions = h('div', { class: 'actions' },
-    h('button', { class: 'btn', type: 'button', onclick: () => openPdf(d.id) }, icon('file'), 'Apri PDF'),
     d.driveLink && h('a', { class: 'btn', href: d.driveLink, target: '_blank', rel: 'noopener noreferrer' }, icon('link'), 'Apri su Drive'),
     needsSync(d) &&
       h('button', { class: 'btn', type: 'button', onclick: async () => {
@@ -638,17 +546,15 @@ async function openDetail(id) {
           await syncDoc(d.id);
           dlg.close();
           await reload();
-          toast('Inviata a Google ✓');
+          toast('Inviata su Drive ✓');
         } catch (e) {
           await reload();
           toast(friendly(e), 7000);
         }
-      } }, icon('sync'), 'Invia a Google ora'),
+      } }, icon('sync'), 'Invia a Drive ora'),
     h('button', { class: 'btn danger', type: 'button', onclick: async () => {
       const extra = d.driveId ? ' La copia su Drive resta dov’è.' : ' Non c’è una copia su Drive: sparirà del tutto.';
       if (!confirm(`Eliminare la fattura “${d.supplier}” dal telefono?${extra}`)) return;
-      const tokenP = d.eventId && G.isConnected() ? G.getToken().catch(() => null) : null;
-      if (d.eventId) { try { if (await tokenP) await G.deleteEvent(d.eventId); } catch { /* promemoria da togliere a mano */ } }
       await db.del(d.id);
       dlg.close();
       await reload();
@@ -663,21 +569,19 @@ async function openDetail(id) {
       h('div', { class: 'preview' },
         thumbEl(d),
         h('div', { class: 'preview-info' },
-          h('span', { class: 'big', text: fmtAmount(d.amount) }),
-          h('span', { class: `pill ${pill.cls}`, text: pill.text }),
-          h('span', { text: `Aggiunta il ${fmtDay(d.createdAt.slice(0, 10))}` }),
-          d.paidAt && h('span', { text: `Pagata il ${fmtDay(d.paidAt.slice(0, 10))}` })
+          h('span', { class: 'big', text: fmtDay(d.date) }),
+          h('span', { text: d.category }),
+          d.amount != null && h('span', { text: fmtAmount(d.amount) }),
+          d.pages > 1 && h('span', { text: `${d.pages} pagine` })
         )
       ),
-      d.syncError && h('div', { class: 'err', text: `Ultimo invio a Google non riuscito: ${d.syncError}` }),
+      d.syncError && h('div', { class: 'err', text: `Ultimo invio a Drive non riuscito: ${d.syncError}` }),
       form.el,
       actions,
     ],
     [
       saveBtn,
-      h('button', { class: `btn ${d.status === 'open' ? 'primary' : ''}`, type: 'button', onclick: () => setPaid(d, d.status === 'open') },
-        icon(d.status === 'open' ? 'check' : 'undo'),
-        d.status === 'open' ? 'Segna come pagata' : 'Riapri')
+      h('button', { class: 'btn primary', type: 'button', onclick: () => openPdf(d.id) }, icon('file'), 'Apri PDF'),
     ]
   );
 }
@@ -687,12 +591,6 @@ function openSettings() {
   const dlg = $('#dlg-settings');
   const st = G.state();
   const connected = G.isConnected();
-
-  const sw = (label, key, hintText) =>
-    h('label', { class: 'switch' },
-      h('span', {}, label, hintText && h('div', { class: 'hint', text: hintText })),
-      h('input', { type: 'checkbox', checked: settings[key] ? true : null, onchange: (e) => { settings[key] = e.target.checked; saveSettings(); render(); } })
-    );
 
   const clientInput = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: '123456-abc.apps.googleusercontent.com', value: settings.clientId || window.FATTURE_CONFIG?.clientId || '' });
 
@@ -709,8 +607,7 @@ function openSettings() {
           await G.getToken();
           render();
           openSettings();
-          const s = G.state();
-          toast(s.drive && s.cal ? 'Google collegato ✓' : 'Collegato, ma hai concesso solo alcuni permessi.', 6000);
+          toast(G.state().drive ? 'Google collegato ✓' : 'Collegato, ma senza il permesso per Drive.', 6000);
           syncAll();
         } catch (e) {
           toast(friendly(e), 7000);
@@ -718,22 +615,24 @@ function openSettings() {
       } }, 'Collega Google');
 
   const statusLine = connected
-    ? `Collegato · Drive ${st.drive ? '✓' : '✗ (permesso negato)'} · Calendar ${st.cal ? '✓' : '✗ (permesso negato)'}`
+    ? `Collegato · Drive ${st.drive ? '✓' : '✗ (permesso negato)'}`
     : G.hasClientId()
-    ? 'Non collegato. Collegando Google, ogni fattura viene copiata nel tuo Drive e la scadenza finisce sul tuo Calendar.'
+    ? 'Non collegato. Collegando Google, ogni fattura viene copiata nel tuo Drive.'
     : 'Prima di collegare Google serve il Client ID: aprilo in “Avanzate” qui sotto (vedi README).';
 
   sheet(dlg, 'Impostazioni', [
     h('div', { class: 'card' },
-      h('h3', { text: 'Google' }),
+      h('h3', { text: 'Google Drive' }),
       h('p', { class: 'muted', text: statusLine }),
       connectBtn,
-      sw('Salva i PDF su Drive', 'autoDrive', 'Cartelle: Fatture / anno / categoria'),
-      sw('Promemoria su Calendar', 'autoCal', 'Avvisi 7, 3 e 1 giorno prima, e il giorno stesso')
+      h('label', { class: 'switch' },
+        h('span', {}, 'Salva i PDF su Drive', h('div', { class: 'hint', text: 'Cartelle: anno / categoria · nome: mandante + data' })),
+        h('input', { type: 'checkbox', checked: settings.autoDrive ? true : null, onchange: (e) => { settings.autoDrive = e.target.checked; saveSettings(); render(); } })
+      )
     ),
     h('div', { class: 'card' },
       h('h3', { text: 'Privacy' }),
-      h('p', { class: 'muted', text: 'Non c’è nessun server: le fatture stanno sul telefono e nel tuo Drive. L’app vede solo i file che crea lei e non può leggere né pagare nulla. Per revocare ogni accesso: myaccount.google.com/permissions.' })
+      h('p', { class: 'muted', text: 'Non c’è nessun server: le fatture stanno sul telefono e nel tuo Drive. L’app vede solo i file che crea lei, non il resto del Drive. Per revocare ogni accesso: myaccount.google.com/permissions.' })
     ),
     h('details', { class: 'card' },
       h('summary', { text: 'Avanzate' }),

@@ -1,5 +1,5 @@
 // Service worker: l'app si apre anche senza rete. Mai intercetta richieste verso Google.
-const CACHE = 'fatture-v1';
+const CACHE = 'fatture-v2';
 const ASSETS = [
   './',
   'index.html',

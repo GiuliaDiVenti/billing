@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://www.googleapis.com https://accounts.google.com/gsi/; frame-src blob: https://accounts.google.com/gsi/; style-src 'self' https://accounts.google.com/gsi/style; img-src 'self' data: blob:; object-src 'self' blob:; base-uri 'none'; form-action 'none'">
   <title>Fatture</title>
-  <meta name="description" content="Scansiona le fatture, non dimenticarti di pagarle.">
+  <meta name="description" content="Archivio delle fatture pagate.">
   <meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0f1218" media="(prefers-color-scheme: dark)">
   <meta name="mobile-web-app-capable" content="yes">
@@ -31,9 +31,9 @@
   <main>
     <section id="summary" class="summary" aria-live="polite"></section>
 
-    <nav id="tabs" class="tabs" role="tablist" aria-label="Filtro fatture"></nav>
+    <div id="chips" class="chips hidden"></div>
     <div id="search-wrap" class="search-wrap hidden">
-      <input id="search" type="search" placeholder="Cerca fornitore, categoria…" autocomplete="off" aria-label="Cerca">
+      <input id="search" type="search" placeholder="Cerca mandante, categoria…" autocomplete="off" aria-label="Cerca">
     </div>
 
     <ul id="list" class="list"></ul>
