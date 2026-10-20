@@ -89,7 +89,7 @@ const parseAmount = (s) => {
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 };
 const plural = (n, one, many) => (n === 1 ? one : many);
-const yearOf = (d) => d.date.slice(0, 4);
+const yearOf = (d) => String(d.date || '').slice(0, 4);
 
 /* =====================================================================
    Stato
@@ -112,8 +112,19 @@ const isStandalone = () => matchMedia('(display-mode: standalone)').matches || n
 /** Manca l'invio a Drive? */
 const needsSync = (d) => settings.autoDrive && G.canDrive() && !d.driveId;
 
+/** Sistema le schede salvate da versioni precedenti dell'app (senza data, categoria, ecc.). */
+function normalize(d) {
+  let changed = false;
+  if (!d.createdAt) { d.createdAt = new Date().toISOString(); changed = true; }
+  if (!d.date) { d.date = String(d.due || d.createdAt).slice(0, 10); changed = true; }
+  if (!d.category) { d.category = 'Altro'; changed = true; }
+  if (!d.supplier) { d.supplier = 'Fattura'; changed = true; }
+  return changed;
+}
+
 async function reload() {
   docs = await db.all();
+  for (const d of docs) if (normalize(d)) await db.put(d).catch(() => {});
   render();
 }
 
@@ -203,7 +214,7 @@ function renderSummary() {
   const thisYear = docs.filter((d) => yearOf(d) === year).length;
   const toSend = docs.filter(needsSync).length;
   const sub = docs.length
-    ? `${thisYear} ${plural(thisYear, 'fattura', 'fatture')} nel ${year}`
+    ? `${thisYear} nel ${year}`
     : 'Tocca “Scansiona fattura” per iniziare';
 
   box.replaceChildren(...[
@@ -282,7 +293,11 @@ function renderList() {
   if (!l.length) {
     const t = query || catFilter ? 'Nessun risultato' : 'Archivio vuoto';
     const s = query || catFilter ? 'Prova con un’altra parola o categoria.' : 'Tocca “Scansiona fattura” per aggiungere la prima.';
-    empty.replaceChildren(h('strong', { text: t }), s);
+    empty.replaceChildren(
+      h('strong', { text: t }),
+      s,
+      !(query || catFilter) && h('div', {}, h('button', { class: 'btn primary cta', type: 'button', onclick: openNew }, icon('camera'), 'Scansiona la prima fattura'))
+    );
   }
 }
 
