@@ -1,17 +1,17 @@
 // Service worker: l'app si apre anche senza rete.
 // Prima prova la rete (così gli aggiornamenti arrivano subito), poi la copia salvata.
 // Non tocca mai le richieste verso Google.
-const CACHE = 'fatture-v3';
+const CACHE = 'fatture-v4';
 const ASSETS = [
   './',
   'index.html',
-  'styles.css',
-  'app.js',
+  'styles.css?v=4',
+  'app.js?v=4',
   'db.js',
   'pdf.js',
   'scan.js',
   'google.js',
-  'config.js',
+  'config.js?v=4',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
