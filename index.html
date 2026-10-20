@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; connect-src 'self' https://www.googleapis.com https://accounts.google.com/gsi/; frame-src blob: https://accounts.google.com/gsi/; style-src 'self' https://accounts.google.com/gsi/style; img-src 'self' data: blob:; object-src 'self' blob:; base-uri 'none'; form-action 'none'">
+  <title>Fatture</title>
+  <meta name="description" content="Scansiona le fatture, non dimenticarti di pagarle.">
+  <meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1218" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Fatture">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-in">
+      <div>
+        <h1>Fatture</h1>
+        <button id="sync-status" class="status-link" type="button"></button>
+      </div>
+      <button id="btn-settings" class="icon-btn" type="button" aria-label="Impostazioni"></button>
+    </div>
+  </header>
+
+  <main>
+    <section id="summary" class="summary" aria-live="polite"></section>
+
+    <nav id="tabs" class="tabs" role="tablist" aria-label="Filtro fatture"></nav>
+    <div id="search-wrap" class="search-wrap hidden">
+      <input id="search" type="search" placeholder="Cerca fornitore, categoria…" autocomplete="off" aria-label="Cerca">
+    </div>
+
+    <ul id="list" class="list"></ul>
+    <div id="empty" class="empty hidden"></div>
+  </main>
+
+  <button id="fab" class="fab" type="button"></button>
+
+  <dialog id="dlg-new" class="sheet" aria-label="Nuova fattura"></dialog>
+  <dialog id="dlg-detail" class="sheet" aria-label="Dettaglio fattura"></dialog>
+  <dialog id="dlg-settings" class="sheet" aria-label="Impostazioni"></dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+</body>
+</html>
